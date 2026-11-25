@@ -11,3 +11,5 @@ Scenes that are already open are marked dirty, so save them in the editor. Scene
 ## Installation
 
 Download the Unity package from the [Releases](../../releases) page and import it using `Assets > Import Package > Custom Package...`.
+
+When imported into a Git repository, the editor tool adds its `Assets/FPSOverlay` folder and folder metadata to that repository's local `.git/info/exclude`. The repository's shared `.gitignore` is not changed.
