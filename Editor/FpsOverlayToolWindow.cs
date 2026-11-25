@@ -18,6 +18,11 @@ public sealed class FpsOverlayToolWindow : EditorWindow
         GetWindow<FpsOverlayToolWindow>("FPS Overlay Tool");
     }
 
+    private void OnFocus()
+    {
+        RefreshSceneStatuses();
+    }
+
     private void OnGUI()
     {
         EditorGUILayout.LabelField("FPS UI", EditorStyles.boldLabel);
