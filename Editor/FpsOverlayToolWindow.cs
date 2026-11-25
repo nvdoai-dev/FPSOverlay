@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.IO;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -7,6 +9,8 @@ using UnityEngine.UI;
 public sealed class FpsOverlayToolWindow : EditorWindow
 {
     private const string OverlayName = "FPS Overlay";
+    private readonly Dictionary<string, bool> _sceneOverlayStatus = new Dictionary<string, bool>();
+    private Vector2 _sceneListScrollPosition;
 
     [MenuItem("Tools/Add FPS Overlay")]
     private static void Open()
@@ -18,48 +22,177 @@ public sealed class FpsOverlayToolWindow : EditorWindow
     {
         EditorGUILayout.LabelField("FPS UI", EditorStyles.boldLabel);
         EditorGUILayout.HelpBox(
-            "Add or remove an FPS counter in the currently active scene. Save the scene to keep the change.",
+            "The FPS overlay is stored in each scene separately. Check Build Settings scenes, then add or remove the overlay per scene.",
             MessageType.Info);
 
-        var activeScene = SceneManager.GetActiveScene();
-        EditorGUILayout.LabelField("Active scene", string.IsNullOrEmpty(activeScene.name) ? "Untitled" : activeScene.name);
-        var existingOverlay = FindOverlay(activeScene);
-
-        using (new EditorGUI.DisabledScope(!activeScene.IsValid() || !activeScene.isLoaded || existingOverlay != null))
+        using (new EditorGUILayout.HorizontalScope())
         {
-            if (GUILayout.Button("Add FPS to UI", GUILayout.Height(32f)))
-                AddOverlay(activeScene);
+            EditorGUILayout.LabelField("Scenes in Build Settings", EditorStyles.boldLabel);
+            if (GUILayout.Button("Refresh status", GUILayout.Width(110f)))
+                RefreshSceneStatuses();
         }
 
-        using (new EditorGUI.DisabledScope(existingOverlay == null))
+        var buildScenes = EditorBuildSettings.scenes;
+        if (buildScenes.Length == 0)
         {
-            if (GUILayout.Button("Remove FPS from UI", GUILayout.Height(28f)))
-                RemoveOverlay(existingOverlay);
+            EditorGUILayout.HelpBox("No scenes are listed in Build Settings.", MessageType.Warning);
+            return;
         }
+
+        _sceneListScrollPosition = EditorGUILayout.BeginScrollView(_sceneListScrollPosition);
+        foreach (var buildScene in buildScenes)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var sceneName = Path.GetFileNameWithoutExtension(buildScene.path);
+                EditorGUILayout.LabelField(
+                    string.IsNullOrEmpty(sceneName) ? buildScene.path : sceneName,
+                    GUILayout.MinWidth(120f));
+
+                if (!buildScene.enabled)
+                    GUILayout.Label("Disabled", GUILayout.Width(58f));
+
+                if (!AssetDatabase.LoadAssetAtPath<SceneAsset>(buildScene.path))
+                {
+                    GUILayout.Label("Scene not found", GUILayout.Width(100f));
+                    continue;
+                }
+
+                var hasOverlay = _sceneOverlayStatus.TryGetValue(buildScene.path, out var status) && status;
+                GUILayout.Label(
+                    !_sceneOverlayStatus.ContainsKey(buildScene.path)
+                        ? "Not checked"
+                        : hasOverlay ? "FPS added" : "Needs FPS",
+                    GUILayout.Width(85f));
+
+                if (GUILayout.Button(hasOverlay ? "Remove FPS" : "Add FPS", GUILayout.Width(90f)))
+                {
+                    SetOverlayInBuildScene(buildScene.path, !hasOverlay);
+                    _sceneOverlayStatus[buildScene.path] = !hasOverlay;
+                }
+            }
+        }
+        EditorGUILayout.EndScrollView();
 
         EditorGUILayout.HelpBox(
-            existingOverlay == null ? "FPS overlay is not in this scene." : "FPS overlay is present in this scene.",
-            existingOverlay == null ? MessageType.None : MessageType.Info);
+            "Changes to scenes already open are marked dirty; save those scenes in the editor. Closed scenes are saved by this tool.",
+            MessageType.None);
     }
 
     private static FpsOverlay FindOverlay(Scene scene)
     {
-        if (!scene.IsValid())
+        if (!scene.IsValid() || !scene.isLoaded)
             return null;
 
-        var overlays = Object.FindObjectsByType<FpsOverlay>(
-            FindObjectsInactive.Include,
-            FindObjectsSortMode.None);
-        foreach (var overlay in overlays)
+        foreach (var root in scene.GetRootGameObjects())
         {
-            if (overlay.gameObject.scene == scene)
+            var overlay = root.GetComponentInChildren<FpsOverlay>(true);
+            if (overlay != null)
                 return overlay;
         }
 
         return null;
     }
 
-    private static void AddOverlay(Scene scene)
+    private void RefreshSceneStatuses()
+    {
+        _sceneOverlayStatus.Clear();
+        var activeScene = SceneManager.GetActiveScene();
+
+        try
+        {
+            foreach (var buildScene in EditorBuildSettings.scenes)
+            {
+                if (!AssetDatabase.LoadAssetAtPath<SceneAsset>(buildScene.path))
+                    continue;
+
+                var scene = SceneManager.GetSceneByPath(buildScene.path);
+                var openedTemporarily = !scene.IsValid() || !scene.isLoaded;
+                if (openedTemporarily)
+                    scene = EditorSceneManager.OpenScene(buildScene.path, OpenSceneMode.Additive);
+
+                try
+                {
+                    _sceneOverlayStatus[buildScene.path] = FindOverlay(scene) != null;
+                }
+                finally
+                {
+                    if (openedTemporarily && scene.IsValid() && scene.isLoaded)
+                        EditorSceneManager.CloseScene(scene, true);
+                }
+            }
+        }
+        finally
+        {
+            if (activeScene.IsValid() && activeScene.isLoaded)
+                SceneManager.SetActiveScene(activeScene);
+        }
+
+        Repaint();
+    }
+
+    private static void SetOverlayInBuildScene(string scenePath, bool addOverlay)
+    {
+        var previousActiveScene = SceneManager.GetActiveScene();
+        var scene = SceneManager.GetSceneByPath(scenePath);
+        var openedTemporarily = !scene.IsValid() || !scene.isLoaded;
+        if (openedTemporarily)
+            scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Additive);
+
+        var closeTemporaryScene = openedTemporarily;
+        try
+        {
+            var existingOverlay = FindOverlay(scene);
+            if (addOverlay && existingOverlay == null)
+            {
+                if (openedTemporarily)
+                    closeTemporaryScene = false;
+                AddOverlay(scene, false);
+                if (openedTemporarily)
+                {
+                    if (!EditorSceneManager.SaveScene(scene))
+                    {
+                        EditorUtility.DisplayDialog(
+                            "FPS Overlay",
+                            $"Could not save {scenePath}. The scene is left open so you can save it manually.",
+                            "OK");
+                        return;
+                    }
+
+                    closeTemporaryScene = true;
+                }
+            }
+            else if (!addOverlay && existingOverlay != null)
+            {
+                if (openedTemporarily)
+                    closeTemporaryScene = false;
+                RemoveOverlay(existingOverlay);
+                if (openedTemporarily)
+                {
+                    if (!EditorSceneManager.SaveScene(scene))
+                    {
+                        EditorUtility.DisplayDialog(
+                            "FPS Overlay",
+                            $"Could not save {scenePath}. The scene is left open so you can save it manually.",
+                            "OK");
+                        return;
+                    }
+
+                    closeTemporaryScene = true;
+                }
+            }
+        }
+        finally
+        {
+            if (openedTemporarily && closeTemporaryScene && scene.IsValid() && scene.isLoaded)
+                EditorSceneManager.CloseScene(scene, true);
+
+            if (previousActiveScene.IsValid() && previousActiveScene.isLoaded)
+                SceneManager.SetActiveScene(previousActiveScene);
+        }
+    }
+
+    private static void AddOverlay(Scene scene, bool selectCreatedObject)
     {
         var canvasObject = new GameObject(
             OverlayName,
@@ -108,7 +241,7 @@ public sealed class FpsOverlayToolWindow : EditorWindow
         labelRect.offsetMax = new Vector2(-4f, -2f);
 
         var label = labelObject.GetComponent<Text>();
-        label.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+        label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         label.fontSize = 24;
         label.fontStyle = FontStyle.Bold;
         label.alignment = TextAnchor.MiddleCenter;
@@ -123,7 +256,8 @@ public sealed class FpsOverlayToolWindow : EditorWindow
 
         Undo.RegisterCreatedObjectUndo(canvasObject, "Add FPS UI");
         EditorSceneManager.MarkSceneDirty(scene);
-        Selection.activeGameObject = canvasObject;
+        if (selectCreatedObject)
+            Selection.activeGameObject = canvasObject;
     }
 
     private static void RemoveOverlay(FpsOverlay overlay)
