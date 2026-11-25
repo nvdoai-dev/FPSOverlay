@@ -33,6 +33,8 @@ public sealed class FpsOverlay : MonoBehaviour
     private ProfilerRecorder _mainThreadTimeRecorder;
     private bool _mainThreadTimeRecorderStarted;
     private float _uiRefreshTimer;
+    private float _worstFrameTimeSeconds;
+    private long _worstMainThreadTimeNanoseconds;
 
     private void Awake()
     {
@@ -125,26 +127,34 @@ public sealed class FpsOverlay : MonoBehaviour
         if (fpsLabel == null)
             return;
 
-        _uiRefreshTimer += Time.unscaledDeltaTime;
+        var frameTimeSeconds = Time.unscaledDeltaTime;
+        _worstFrameTimeSeconds = Mathf.Max(_worstFrameTimeSeconds, frameTimeSeconds);
+        if (_mainThreadTimeRecorderStarted)
+        {
+            _worstMainThreadTimeNanoseconds = System.Math.Max(
+                _worstMainThreadTimeNanoseconds,
+                _mainThreadTimeRecorder.LastValue);
+        }
+
+        _uiRefreshTimer += frameTimeSeconds;
         if (_uiRefreshTimer < UiRefreshInterval)
             return;
 
         _uiRefreshTimer %= UiRefreshInterval;
 
-        var frameTimeSeconds = Time.unscaledDeltaTime;
-        var measuredFps = frameTimeSeconds > 0f ? 1f / frameTimeSeconds : 0f;
+        var measuredFps = _worstFrameTimeSeconds > 0f ? 1f / _worstFrameTimeSeconds : 0f;
         var fps = Mathf.Min(measuredFps, TargetFrameRate);
-        var frameTimeMilliseconds = frameTimeSeconds * 1000f;
+        var frameTimeMilliseconds = _worstFrameTimeSeconds * 1000f;
         var frameBudgetMilliseconds = 1000f / TargetFrameRate;
-        var cpuTimeNanoseconds = _mainThreadTimeRecorderStarted
-            ? _mainThreadTimeRecorder.LastValue
-            : 0;
-        var cpuTime = cpuTimeNanoseconds > 0
-            ? $"{cpuTimeNanoseconds * 1e-6f:0.0} ms"
+        var cpuTime = _worstMainThreadTimeNanoseconds > 0
+            ? $"{_worstMainThreadTimeNanoseconds * 1e-6f:0.0} ms"
             : "--";
         fpsLabel.text =
-            $"FPS: {fps:0} | Frame: {frameTimeMilliseconds:0.0}/{frameBudgetMilliseconds:0.0} ms\n" +
+            $"FPS: {fps:0.0} | Frame: {frameTimeMilliseconds:0.0}/{frameBudgetMilliseconds:0.0} ms\n" +
             $"Main Thread: {cpuTime}";
+
+        _worstFrameTimeSeconds = 0f;
+        _worstMainThreadTimeNanoseconds = 0;
     }
 
     private static bool IsSupportedFrameRate(int frameRate)
